@@ -157,7 +157,7 @@
 //! # let scid = quiche::ConnectionId::from_ref(&[0xba; 16]);
 //! # let peer = "127.0.0.1:1234".parse().unwrap();
 //! # let local = "127.0.0.1:4321".parse().unwrap();
-//! # let mut conn = quiche::accept(&scid, None, local, peer, &mut config)?;
+//! # let mut conn = quiche::accept(&scid, Npub struct Connectionone, local, peer, &mut config)?;
 //! loop {
 //!     let (write, send_info) = match conn.send(&mut out) {
 //!         Ok(v) => v,
@@ -404,6 +404,7 @@ use stream::StreamPriorityKey;
 
 use std::cmp;
 use std::convert::TryInto;
+use std::hash::Hash;
 use std::time;
 
 use std::sync::Arc;
@@ -674,7 +675,7 @@ pub struct ConnectionError {
 #[derive(PartialEq, Eq)]
 pub enum Shutdown {
     /// Stop receiving stream data.
-    Read  = 0,
+    Read = 0,
 
     /// Stop sending stream data.
     Write = 1,
@@ -686,10 +687,10 @@ pub enum Shutdown {
 #[cfg_attr(docsrs, doc(cfg(feature = "qlog")))]
 pub enum QlogLevel {
     /// Logs any events of Core importance.
-    Core  = 0,
+    Core = 0,
 
     /// Logs any events of Core and Base importance.
-    Base  = 1,
+    Base = 1,
 
     /// Logs any events of Core, Base and Extra importance
     Extra = 2,
@@ -1258,7 +1259,7 @@ pub struct Connection {
     recovery_config: recovery::RecoveryConfig,
 
     /// The path manager.
-    paths: path::PathMap,
+    pub paths: path::PathMap,
 
     /// List of supported application protocols.
     application_protos: Vec<Vec<u8>>,
@@ -1332,7 +1333,7 @@ pub struct Connection {
 
     /// Error code and reason received from the peer in a CONNECTION_CLOSE
     /// frame.
-    peer_error: Option<ConnectionError>,
+    pub peer_error: Option<ConnectionError>,
 
     /// The connection-level limit at which send blocking occurred.
     blocked_limit: Option<u64>,
@@ -1418,6 +1419,16 @@ pub struct Connection {
 
     /// A resusable buffer used by Recovery
     newly_acked: Vec<recovery::Acked>,
+
+    /// Test to check the connection migration from the server
+    pub pc_state: bool,
+
+    /// The latest stream ID from which data was received.
+    /// Used to track and measure the amount of data received per stream.
+    pub latest_received_stream_id: u64,
+
+    /// The latest stream ID from which data was sent.
+    pub stream_rx_log: HashMap<u64, HashMap<SocketAddr, u64>>,
 }
 
 /// Creates a new server-side connection.
@@ -1851,6 +1862,12 @@ impl Connection {
             disable_dcid_reuse: config.disable_dcid_reuse,
 
             newly_acked: Vec::new(),
+
+            pc_state: false,
+
+            latest_received_stream_id: 99999,
+
+            stream_rx_log: HashMap::new(),
         };
 
         if let Some(odcid) = odcid {
@@ -2027,6 +2044,11 @@ impl Connection {
         let peer_params =
             TransportParams::decode(raw_params_bytes.as_ref(), self.is_server)?;
 
+        // // The peer's transport parameters are not parsed yet, as we need to
+        // if peer_params.disable_active_migration {
+        //     self.pc_state = true;
+        // }
+
         self.process_peer_transport_params(peer_params)?;
 
         Ok(())
@@ -2154,6 +2176,26 @@ impl Connection {
         self.process_undecrypted_0rtt_packets()?;
 
         Ok(done)
+    }
+
+    /// A custom function that prints a greeting message.
+    ///
+    /// This function is used for demonstration purposes and outputs
+    /// "Hello~~~" to the console.
+    pub fn my_custom_function(&mut self) {
+        println!("Hello~~~");
+    }
+
+    /// A custom function that prints a greeting message.
+    ///
+    /// This function is used for demonstration purposes and outputs
+    /// "Hello~~~" to the console.
+    pub fn get_disable_active_migration_state(&mut self) -> bool {
+        if self.pc_state {
+            return true;
+        } else {
+            return false;
+        }
     }
 
     fn process_undecrypted_0rtt_packets(&mut self) -> Result<()> {
@@ -2477,9 +2519,9 @@ impl Connection {
             Some(v) => v,
 
             None => {
-                if hdr.ty == packet::Type::ZeroRTT &&
-                    self.undecryptable_pkts.len() < MAX_UNDECRYPTABLE_PACKETS &&
-                    !self.is_established()
+                if hdr.ty == packet::Type::ZeroRTT
+                    && self.undecryptable_pkts.len() < MAX_UNDECRYPTABLE_PACKETS
+                    && !self.is_established()
                 {
                     // Buffer 0-RTT packets when the required read key is not
                     // available yet, and process them later.
@@ -2533,9 +2575,9 @@ impl Connection {
         // Check for key update.
         let mut aead_next = None;
 
-        if self.handshake_confirmed &&
-            hdr.ty != Type::ZeroRTT &&
-            hdr.key_phase != self.key_phase
+        if self.handshake_confirmed
+            && hdr.ty != Type::ZeroRTT
+            && hdr.key_phase != self.key_phase
         {
             // Check if this packet arrived before key update.
             if let Some(key_update) = self.pkt_num_spaces[epoch]
@@ -2931,9 +2973,9 @@ impl Connection {
             // Did the peer migrated to another path?
             let active_path_id = self.paths.get_active_path_id()?;
 
-            if self.is_server &&
-                recv_pid != active_path_id &&
-                self.pkt_num_spaces[epoch].largest_rx_non_probing_pkt_num == pn
+            if self.is_server
+                && recv_pid != active_path_id
+                && self.pkt_num_spaces[epoch].largest_rx_non_probing_pkt_num == pn
             {
                 self.on_peer_migrated(recv_pid, self.disable_dcid_reuse, now)?;
             }
@@ -3209,8 +3251,8 @@ impl Connection {
             }
 
             // Don't coalesce packets that must go on different paths.
-            if !(from.is_some() && to.is_some()) &&
-                self.get_send_path_id(from, to)? != send_pid
+            if !(from.is_some() && to.is_some())
+                && self.get_send_path_id(from, to)? != send_pid
             {
                 break;
             }
@@ -3328,11 +3370,12 @@ impl Connection {
                         stream_id,
                         error_code,
                         final_size,
-                    } =>
+                    } => {
                         if self.streams.get(stream_id).is_some() {
                             self.streams
                                 .insert_reset(stream_id, error_code, final_size);
-                        },
+                        }
+                    },
 
                     // Retransmit HANDSHAKE_DONE only if it hasn't been acked at
                     // least once already.
@@ -3502,19 +3545,17 @@ impl Connection {
         // generate an ACK (if there's anything to ACK) since we're going to
         // send a packet with PING anyways, even if we haven't received anything
         // ACK eliciting.
-        if pkt_space.recv_pkt_need_ack.len() > 0 &&
-            (pkt_space.ack_elicited || ack_elicit_required) &&
-            (!is_closing ||
-                (pkt_type == Type::Handshake &&
-                    self.local_error
-                        .as_ref()
-                        .map_or(false, |le| le.is_app))) &&
-            path.active()
+        if pkt_space.recv_pkt_need_ack.len() > 0
+            && (pkt_space.ack_elicited || ack_elicit_required)
+            && (!is_closing
+                || (pkt_type == Type::Handshake
+                    && self.local_error.as_ref().map_or(false, |le| le.is_app)))
+            && path.active()
         {
             let ack_delay = pkt_space.largest_rx_pkt_time.elapsed();
 
-            let ack_delay = ack_delay.as_micros() as u64 /
-                2_u64
+            let ack_delay = ack_delay.as_micros() as u64
+                / 2_u64
                     .pow(self.local_transport_params.ack_delay_exponent as u32);
 
             let frame = frame::Frame::ACK {
@@ -3602,9 +3643,9 @@ impl Connection {
         if pkt_type == packet::Type::Short && !is_closing && path.active() {
             // Create HANDSHAKE_DONE frame.
             // self.should_send_handshake_done() but without the need to borrow
-            if self.handshake_completed &&
-                !self.handshake_done_sent &&
-                self.is_server
+            if self.handshake_completed
+                && !self.handshake_done_sent
+                && self.is_server
             {
                 let frame = frame::Frame::HandshakeDone;
 
@@ -3700,8 +3741,8 @@ impl Connection {
             }
 
             // Create MAX_DATA frame as needed.
-            if self.almost_full &&
-                flow_control.max_data() < flow_control.max_data_next()
+            if self.almost_full
+                && flow_control.max_data() < flow_control.max_data_next()
             {
                 // Autotune the connection window size.
                 flow_control.autotune_window(now, path.recovery.rtt());
@@ -3843,10 +3884,10 @@ impl Connection {
         }
 
         // Create CRYPTO frame.
-        if pkt_space.crypto_stream.is_flushable() &&
-            left > frame::MAX_CRYPTO_OVERHEAD &&
-            !is_closing &&
-            path.active()
+        if pkt_space.crypto_stream.is_flushable()
+            && left > frame::MAX_CRYPTO_OVERHEAD
+            && !is_closing
+            && path.active()
         {
             let crypto_off = pkt_space.crypto_stream.send.off_front();
 
@@ -3925,11 +3966,11 @@ impl Connection {
         }
 
         // Create DATAGRAM frame.
-        if (pkt_type == packet::Type::Short || pkt_type == packet::Type::ZeroRTT) &&
-            left > frame::MAX_DGRAM_OVERHEAD &&
-            !is_closing &&
-            path.active() &&
-            do_dgram
+        if (pkt_type == packet::Type::Short || pkt_type == packet::Type::ZeroRTT)
+            && left > frame::MAX_DGRAM_OVERHEAD
+            && !is_closing
+            && path.active()
+            && do_dgram
         {
             if let Some(max_dgram_payload) = max_dgram_len {
                 while let Some(len) = self.dgram_send_queue.peek_front_len() {
@@ -4003,11 +4044,11 @@ impl Connection {
         }
 
         // Create a single STREAM frame for the first stream that is flushable.
-        if (pkt_type == packet::Type::Short || pkt_type == packet::Type::ZeroRTT) &&
-            left > frame::MAX_STREAM_OVERHEAD &&
-            !is_closing &&
-            path.active() &&
-            !dgram_emitted
+        if (pkt_type == packet::Type::Short || pkt_type == packet::Type::ZeroRTT)
+            && left > frame::MAX_STREAM_OVERHEAD
+            && !is_closing
+            && path.active()
+            && !dgram_emitted
         {
             while let Some(priority_key) = self.streams.peek_flushable() {
                 let stream_id = priority_key.id;
@@ -4116,10 +4157,10 @@ impl Connection {
         // - if we've sent too many non ack-eliciting packets without having
         // sent an ACK eliciting one; OR
         // - the application requested an ack-eliciting frame be sent.
-        if (ack_elicit_required || path.needs_ack_eliciting) &&
-            !ack_eliciting &&
-            left >= 1 &&
-            !is_closing
+        if (ack_elicit_required || path.needs_ack_eliciting)
+            && !ack_eliciting
+            && left >= 1
+            && !is_closing
         {
             let frame = frame::Frame::Ping;
 
@@ -4150,9 +4191,9 @@ impl Connection {
         // as Initial always requires padding.
         //
         // 2) this is a probing packet towards an unvalidated peer address.
-        if (has_initial || !path.validated()) &&
-            pkt_type == packet::Type::Short &&
-            left >= 1
+        if (has_initial || !path.validated())
+            && pkt_type == packet::Type::Short
+            && left >= 1
         {
             let frame = frame::Frame::Padding { len: left };
 
@@ -4407,8 +4448,8 @@ impl Connection {
         &mut self, stream_id: u64, out: &mut [u8],
     ) -> Result<(usize, bool)> {
         // We can't read on our own unidirectional streams.
-        if !stream::is_bidi(stream_id) &&
-            stream::is_local(stream_id, self.is_server)
+        if !stream::is_bidi(stream_id)
+            && stream::is_local(stream_id, self.is_server)
         {
             return Err(Error::InvalidStreamState(stream_id));
         }
@@ -4541,8 +4582,8 @@ impl Connection {
         &mut self, stream_id: u64, buf: &[u8], fin: bool,
     ) -> Result<usize> {
         // We can't write on the peer's unidirectional streams.
-        if !stream::is_bidi(stream_id) &&
-            !stream::is_local(stream_id, self.is_server)
+        if !stream::is_bidi(stream_id)
+            && !stream::is_local(stream_id, self.is_server)
         {
             return Err(Error::InvalidStreamState(stream_id));
         }
@@ -4752,17 +4793,17 @@ impl Connection {
         &mut self, stream_id: u64, direction: Shutdown, err: u64,
     ) -> Result<()> {
         // Don't try to stop a local unidirectional stream.
-        if direction == Shutdown::Read &&
-            stream::is_local(stream_id, self.is_server) &&
-            !stream::is_bidi(stream_id)
+        if direction == Shutdown::Read
+            && stream::is_local(stream_id, self.is_server)
+            && !stream::is_bidi(stream_id)
         {
             return Err(Error::InvalidStreamState(stream_id));
         }
 
         // Dont' try to reset a remote unidirectional stream.
-        if direction == Shutdown::Write &&
-            !stream::is_local(stream_id, self.is_server) &&
-            !stream::is_bidi(stream_id)
+        if direction == Shutdown::Write
+            && !stream::is_local(stream_id, self.is_server)
+            && !stream::is_bidi(stream_id)
         {
             return Err(Error::InvalidStreamState(stream_id));
         }
@@ -4891,12 +4932,13 @@ impl Connection {
 
                     // Return the stream to the application immediately if it's
                     // stopped.
-                    Err(_) =>
+                    Err(_) => {
                         return {
                             self.streams.remove_writable(&priority_key);
 
                             Some(priority_key.id)
-                        },
+                        }
+                    },
                 };
 
                 if cmp::min(self.tx_cap, cap) >= stream.send_lowat {
@@ -5334,8 +5376,8 @@ impl Connection {
 
         let active_path = self.paths.get_active_mut()?;
 
-        if self.dgram_send_queue.byte_size() >
-            active_path.recovery.cwnd_available()
+        if self.dgram_send_queue.byte_size()
+            > active_path.recovery.cwnd_available()
         {
             active_path.recovery.update_app_limited(false);
         }
@@ -5364,8 +5406,8 @@ impl Connection {
 
         let active_path = self.paths.get_active_mut()?;
 
-        if self.dgram_send_queue.byte_size() >
-            active_path.recovery.cwnd_available()
+        if self.dgram_send_queue.byte_size()
+            > active_path.recovery.cwnd_available()
         {
             active_path.recovery.update_app_limited(false);
         }
@@ -5589,11 +5631,12 @@ impl Connection {
         // If the active path failed, try to find a new candidate.
         if self.paths.get_active_path_id().is_err() {
             match self.paths.find_candidate_path() {
-                Some(pid) =>
+                Some(pid) => {
                     if self.set_active_path(pid, now).is_err() {
                         // The connection cannot continue.
                         self.closed = true;
-                    },
+                    }
+                },
 
                 // The connection cannot continue.
                 None => self.closed = true,
@@ -5694,9 +5737,9 @@ impl Connection {
             // Ensures that a Source Connection ID has been dedicated to this
             // path, or a free one is available. This is only required if the
             // host uses non-zero length Source Connection IDs.
-            if !self.ids.zero_length_scid() &&
-                path.active_scid_seq.is_none() &&
-                self.ids.available_scids() == 0
+            if !self.ids.zero_length_scid()
+                && path.active_scid_seq.is_none()
+                && self.ids.available_scids() == 0
             {
                 return Err(Error::OutOfIdentifiers);
             }
@@ -5838,9 +5881,9 @@ impl Connection {
 
         let active_path_id = self.paths.get_active_path_id()?;
 
-        if active_path_dcid_seq == dcid_seq &&
-            self.ids.lowest_available_dcid_seq().is_none() &&
-            !self
+        if active_path_dcid_seq == dcid_seq
+            && self.ids.lowest_available_dcid_seq().is_none()
+            && !self
                 .paths
                 .iter()
                 .any(|(pid, p)| pid != active_path_id && p.usable())
@@ -6308,8 +6351,9 @@ impl Connection {
     ) -> Result<()> {
         // Validate initial_source_connection_id.
         match &peer_params.initial_source_connection_id {
-            Some(v) if v != &self.destination_id() =>
-                return Err(Error::InvalidTransportParam),
+            Some(v) if v != &self.destination_id() => {
+                return Err(Error::InvalidTransportParam)
+            },
 
             Some(_) => (),
 
@@ -6321,15 +6365,17 @@ impl Connection {
         // Validate original_destination_connection_id.
         if let Some(odcid) = &self.odcid {
             match &peer_params.original_destination_connection_id {
-                Some(v) if v != odcid =>
-                    return Err(Error::InvalidTransportParam),
+                Some(v) if v != odcid => {
+                    return Err(Error::InvalidTransportParam)
+                },
 
                 Some(_) => (),
 
                 // original_destination_connection_id must be
                 // sent by the server.
-                None if !self.is_server =>
-                    return Err(Error::InvalidTransportParam),
+                None if !self.is_server => {
+                    return Err(Error::InvalidTransportParam)
+                },
 
                 None => (),
             }
@@ -6338,8 +6384,9 @@ impl Connection {
         // Validate retry_source_connection_id.
         if let Some(rscid) = &self.rscid {
             match &peer_params.retry_source_connection_id {
-                Some(v) if v != rscid =>
-                    return Err(Error::InvalidTransportParam),
+                Some(v) if v != rscid => {
+                    return Err(Error::InvalidTransportParam)
+                },
 
                 Some(_) => (),
 
@@ -6431,6 +6478,9 @@ impl Connection {
                     let peer_params =
                         TransportParams::decode(raw_params, self.is_server)?;
 
+                    if peer_params.disable_active_migration {
+                        self.pc_state = true;
+                    }
                     self.parse_peer_transport_params(peer_params)?;
                 }
 
@@ -6500,15 +6550,18 @@ impl Connection {
                 match epoch {
                     // Downgrade the epoch to Handshake as the handshake is not
                     // completed yet.
-                    packet::Epoch::Application =>
-                        return Ok(packet::Type::Handshake),
+                    packet::Epoch::Application => {
+                        return Ok(packet::Type::Handshake)
+                    },
 
                     // Downgrade the epoch to Initial as the remote peer might
                     // not be able to decrypt handshake packets yet.
                     packet::Epoch::Handshake
                         if self.pkt_num_spaces[packet::Epoch::Initial]
                             .has_keys() =>
-                        return Ok(packet::Type::Initial),
+                    {
+                        return Ok(packet::Type::Initial)
+                    },
 
                     _ => (),
                 };
@@ -6546,25 +6599,26 @@ impl Connection {
         // If there are flushable, almost full or blocked streams, use the
         // Application epoch.
         let send_path = self.paths.get(send_pid)?;
-        if (self.is_established() || self.is_in_early_data()) &&
-            (self.should_send_handshake_done() ||
-                self.almost_full ||
-                self.blocked_limit.is_some() ||
-                self.dgram_send_queue.has_pending() ||
-                self.local_error
+        if (self.is_established() || self.is_in_early_data())
+            && (self.should_send_handshake_done()
+                || self.almost_full
+                || self.blocked_limit.is_some()
+                || self.dgram_send_queue.has_pending()
+                || self
+                    .local_error
                     .as_ref()
-                    .map_or(false, |conn_err| conn_err.is_app) ||
-                self.streams.should_update_max_streams_bidi() ||
-                self.streams.should_update_max_streams_uni() ||
-                self.streams.has_flushable() ||
-                self.streams.has_almost_full() ||
-                self.streams.has_blocked() ||
-                self.streams.has_reset() ||
-                self.streams.has_stopped() ||
-                self.ids.has_new_scids() ||
-                self.ids.has_retire_dcids() ||
-                send_path.needs_ack_eliciting ||
-                send_path.probing_required())
+                    .map_or(false, |conn_err| conn_err.is_app)
+                || self.streams.should_update_max_streams_bidi()
+                || self.streams.should_update_max_streams_uni()
+                || self.streams.has_flushable()
+                || self.streams.has_almost_full()
+                || self.streams.has_blocked()
+                || self.streams.has_reset()
+                || self.streams.has_stopped()
+                || self.ids.has_new_scids()
+                || self.ids.has_retire_dcids()
+                || send_path.needs_ack_eliciting
+                || send_path.probing_required())
         {
             // Only clients can send 0-RTT packets.
             if !self.is_server && self.is_in_early_data() {
@@ -6612,9 +6666,9 @@ impl Connection {
                     ))
                     .ok_or(Error::InvalidFrame)?;
 
-                if epoch == packet::Epoch::Handshake ||
-                    (epoch == packet::Epoch::Application &&
-                        self.is_established())
+                if epoch == packet::Epoch::Handshake
+                    || (epoch == packet::Epoch::Application
+                        && self.is_established())
                 {
                     self.peer_verified_initial_address = true;
                 }
@@ -6649,8 +6703,8 @@ impl Connection {
                 final_size,
             } => {
                 // Peer can't send on our unidirectional streams.
-                if !stream::is_bidi(stream_id) &&
-                    stream::is_local(stream_id, self.is_server)
+                if !stream::is_bidi(stream_id)
+                    && stream::is_local(stream_id, self.is_server)
                 {
                     return Err(Error::InvalidStreamState(stream_id));
                 }
@@ -6697,8 +6751,8 @@ impl Connection {
                 error_code,
             } => {
                 // STOP_SENDING on a receive-only stream is a fatal error.
-                if !stream::is_local(stream_id, self.is_server) &&
-                    !stream::is_bidi(stream_id)
+                if !stream::is_local(stream_id, self.is_server)
+                    && !stream::is_bidi(stream_id)
                 {
                     return Err(Error::InvalidStreamState(stream_id));
                 }
@@ -6773,14 +6827,25 @@ impl Connection {
 
             frame::Frame::Stream { stream_id, data } => {
                 // Peer can't send on our unidirectional streams.
-                if !stream::is_bidi(stream_id) &&
-                    stream::is_local(stream_id, self.is_server)
+                if !stream::is_bidi(stream_id)
+                    && stream::is_local(stream_id, self.is_server)
                 {
                     return Err(Error::InvalidStreamState(stream_id));
                 }
 
                 let max_rx_data_left = self.max_rx_data() - self.rx_data;
 
+                // Update latest received stream id.
+                self.latest_received_stream_id = stream_id.clone();
+
+                let data_len = data.len() as u64;
+                let local_addr = self.paths.get(recv_path_id)?.local_addr();
+                let addr_map = self
+                    .stream_rx_log
+                    .entry(stream_id)
+                    .or_insert_with(HashMap::new);
+                let entry = addr_map.entry(local_addr).or_insert(0);
+                *entry += data_len;
                 // Get existing stream or create a new one, but if the stream
                 // has already been closed and collected, ignore the frame.
                 //
@@ -6841,8 +6906,8 @@ impl Connection {
 
             frame::Frame::MaxStreamData { stream_id, max } => {
                 // Peer can't receive on its own unidirectional streams.
-                if !stream::is_bidi(stream_id) &&
-                    !stream::is_local(stream_id, self.is_server)
+                if !stream::is_bidi(stream_id)
+                    && !stream::is_local(stream_id, self.is_server)
                 {
                     return Err(Error::InvalidStreamState(stream_id));
                 }
@@ -6905,15 +6970,17 @@ impl Connection {
 
             frame::Frame::StreamDataBlocked { .. } => (),
 
-            frame::Frame::StreamsBlockedBidi { limit } =>
+            frame::Frame::StreamsBlockedBidi { limit } => {
                 if limit > MAX_STREAM_ID {
                     return Err(Error::InvalidFrame);
-                },
+                }
+            },
 
-            frame::Frame::StreamsBlockedUni { limit } =>
+            frame::Frame::StreamsBlockedUni { limit } => {
                 if limit > MAX_STREAM_ID {
                     return Err(Error::InvalidFrame);
-                },
+                }
+            },
 
             frame::Frame::NewConnectionId {
                 seq_num,
@@ -6985,6 +7052,8 @@ impl Connection {
                 self.paths
                     .get_mut(recv_path_id)?
                     .on_challenge_received(data);
+
+                //self.pc_state = true;
             },
 
             frame::Frame::PathResponse { data } => {
@@ -7095,8 +7164,8 @@ impl Connection {
         // If the transport parameter is set to 0, then the respective endpoint
         // decided to disable the idle timeout. If both are disabled we should
         // not set any timeout.
-        if self.local_transport_params.max_idle_timeout == 0 &&
-            self.peer_transport_params.max_idle_timeout == 0
+        if self.local_transport_params.max_idle_timeout == 0
+            && self.peer_transport_params.max_idle_timeout == 0
         {
             return None;
         }
@@ -7170,10 +7239,10 @@ impl Connection {
             .filter_map(|(_, p)| p.active().then(|| p.recovery.cwnd_available()))
             .sum();
 
-        ((self.tx_buffered + self.dgram_send_queue_byte_size()) < cwin_available) &&
-            (self.tx_data.saturating_sub(self.last_tx_data)) <
-                cwin_available as u64 &&
-            cwin_available > 0
+        ((self.tx_buffered + self.dgram_send_queue_byte_size()) < cwin_available)
+            && (self.tx_data.saturating_sub(self.last_tx_data))
+                < cwin_available as u64
+            && cwin_available > 0
     }
 
     fn set_initial_dcid(
@@ -7388,7 +7457,12 @@ impl Connection {
         // Do we have a spare DCID? If we are using zero-length DCID, just use
         // the default having sequence 0 (note that if we exceed our local CID
         // limit, the `insert_path()` call will raise an error.
-        let dcid_seq = if self.ids.zero_length_dcid() {
+        // [SD] Keep to use Current connection id
+        let dcid_seq = if let Some(active_dcid_seq) =
+            self.paths.get_active()?.active_dcid_seq
+        {
+            active_dcid_seq
+        } else if self.ids.zero_length_dcid() {
             0
         } else {
             self.ids
@@ -7404,6 +7478,8 @@ impl Connection {
             .paths
             .insert_path(path, false)
             .map_err(|_| Error::OutOfIdentifiers)?;
+
+        println!("{} dcid {}", dcid_seq, pid);
         self.ids.link_dcid_to_path_id(dcid_seq, pid)?;
 
         Ok(pid)
@@ -7772,6 +7848,7 @@ impl TransportParams {
 
                 0x000c => {
                     tp.disable_active_migration = true;
+                    //println!("{} disable_active_migration", tp.disable_active_migration);
                 },
 
                 0x000d => {
@@ -12611,10 +12688,13 @@ mod tests {
                 testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
             let stream = frames.first().unwrap();
 
-            assert_eq!(stream, &frame::Frame::Stream {
-                stream_id: 8,
-                data: stream::RangeBuf::from(&out, off, false),
-            });
+            assert_eq!(
+                stream,
+                &frame::Frame::Stream {
+                    stream_id: 8,
+                    data: stream::RangeBuf::from(&out, off, false),
+                }
+            );
 
             off = match stream {
                 frame::Frame::Stream { data, .. } => data.max_off(),
@@ -12634,10 +12714,13 @@ mod tests {
                 testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
             let stream = frames.first().unwrap();
 
-            assert_eq!(stream, &frame::Frame::Stream {
-                stream_id: 16,
-                data: stream::RangeBuf::from(&out, off, false),
-            });
+            assert_eq!(
+                stream,
+                &frame::Frame::Stream {
+                    stream_id: 16,
+                    data: stream::RangeBuf::from(&out, off, false),
+                }
+            );
 
             off = match stream {
                 frame::Frame::Stream { data, .. } => data.max_off(),
@@ -12657,10 +12740,13 @@ mod tests {
                 testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
             let stream = frames.first().unwrap();
 
-            assert_eq!(stream, &frame::Frame::Stream {
-                stream_id: 20,
-                data: stream::RangeBuf::from(&out, off, false),
-            });
+            assert_eq!(
+                stream,
+                &frame::Frame::Stream {
+                    stream_id: 20,
+                    data: stream::RangeBuf::from(&out, off, false),
+                }
+            );
 
             off = match stream {
                 frame::Frame::Stream { data, .. } => data.max_off(),
@@ -12695,10 +12781,13 @@ mod tests {
 
             let stream = frames.first().unwrap();
 
-            assert_eq!(stream, &frame::Frame::Stream {
-                stream_id: 4,
-                data: stream::RangeBuf::from(&out, off, false),
-            });
+            assert_eq!(
+                stream,
+                &frame::Frame::Stream {
+                    stream_id: 4,
+                    data: stream::RangeBuf::from(&out, off, false),
+                }
+            );
 
             off = match stream {
                 frame::Frame::Stream { data, .. } => data.max_off(),
@@ -12718,10 +12807,13 @@ mod tests {
                 testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
             let stream = frames.first().unwrap();
 
-            assert_eq!(stream, &frame::Frame::Stream {
-                stream_id: 0,
-                data: stream::RangeBuf::from(&out, off, false),
-            });
+            assert_eq!(
+                stream,
+                &frame::Frame::Stream {
+                    stream_id: 0,
+                    data: stream::RangeBuf::from(&out, off, false),
+                }
+            );
 
             off = match stream {
                 frame::Frame::Stream { data, .. } => data.max_off(),
@@ -12923,9 +13015,10 @@ mod tests {
                 testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
             let mut frame_iter = frames.iter();
 
-            assert_eq!(frame_iter.next().unwrap(), &frame::Frame::Datagram {
-                data: out.into(),
-            });
+            assert_eq!(
+                frame_iter.next().unwrap(),
+                &frame::Frame::Datagram { data: out.into() }
+            );
             assert_eq!(frame_iter.next(), None);
 
             // STREAM 0
@@ -12937,10 +13030,13 @@ mod tests {
             let mut frame_iter = frames.iter();
             let stream = frame_iter.next().unwrap();
 
-            assert_eq!(stream, &frame::Frame::Stream {
-                stream_id: 0,
-                data: stream::RangeBuf::from(&out, off_0, false),
-            });
+            assert_eq!(
+                stream,
+                &frame::Frame::Stream {
+                    stream_id: 0,
+                    data: stream::RangeBuf::from(&out, off_0, false),
+                }
+            );
 
             off_0 = match stream {
                 frame::Frame::Stream { data, .. } => data.max_off(),
@@ -12957,9 +13053,10 @@ mod tests {
                 testing::decode_pkt(&mut pipe.client, &mut buf[..len]).unwrap();
             let mut frame_iter = frames.iter();
 
-            assert_eq!(frame_iter.next().unwrap(), &frame::Frame::Datagram {
-                data: out.into(),
-            });
+            assert_eq!(
+                frame_iter.next().unwrap(),
+                &frame::Frame::Datagram { data: out.into() }
+            );
             assert_eq!(frame_iter.next(), None);
 
             // STREAM 4
@@ -12971,10 +13068,13 @@ mod tests {
             let mut frame_iter = frames.iter();
             let stream = frame_iter.next().unwrap();
 
-            assert_eq!(stream, &frame::Frame::Stream {
-                stream_id: 4,
-                data: stream::RangeBuf::from(&out, off_4, false),
-            });
+            assert_eq!(
+                stream,
+                &frame::Frame::Stream {
+                    stream_id: 4,
+                    data: stream::RangeBuf::from(&out, off_4, false),
+                }
+            );
 
             off_4 = match stream {
                 frame::Frame::Stream { data, .. } => data.max_off(),
@@ -15996,10 +16096,13 @@ mod tests {
         space.next_pkt_num += 1;
 
         pipe.server
-            .recv(&mut pkt_buf[..written], RecvInfo {
-                to: server_addr,
-                from: client_addr_2,
-            })
+            .recv(
+                &mut pkt_buf[..written],
+                RecvInfo {
+                    to: server_addr,
+                    from: client_addr_2,
+                },
+            )
             .expect("server receive path challenge");
 
         // Show that the new path is not considered a destination path by quiche
@@ -16021,6 +16124,8 @@ pub use crate::path::SocketAddrIter;
 pub use crate::recovery::CongestionControlAlgorithm;
 
 pub use crate::stream::StreamIter;
+
+use std::collections::HashMap;
 
 mod cid;
 mod crypto;
