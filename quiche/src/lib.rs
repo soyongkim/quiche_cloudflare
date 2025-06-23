@@ -484,8 +484,8 @@ const CONNECTION_WINDOW_FACTOR: f64 = 1.5;
 // validation as failed.
 const MAX_PROBING_TIMEOUTS: usize = 3;
 
-// The default initial congestion window size in terms of packet count.
-const DEFAULT_INITIAL_CONGESTION_WINDOW_PACKETS: usize = 10;
+// The default initial congestion window size in terms of packet count. [default: 10]
+const DEFAULT_INITIAL_CONGESTION_WINDOW_PACKETS: usize = 100;
 
 /// A specialized [`Result`] type for quiche operations.
 ///
@@ -4588,6 +4588,13 @@ impl Connection {
             return Err(Error::InvalidStreamState(stream_id));
         }
 
+        // println!(
+        //     "[{}] stream_send: stream_id={} buf.len={} fin={}",
+        //     self.trace_id,
+        //     stream_id,
+        //     buf.len(),
+        //     fin
+        // );
         // Mark the connection as blocked if the connection-level flow control
         // limit doesn't let us buffer all the data.
         //
@@ -4626,7 +4633,6 @@ impl Connection {
                 // Since the stream is writable already, mark it here instead.
                 self.streams.insert_writable(&priority_key);
             }
-
             return Err(Error::Done);
         }
 
@@ -4717,6 +4723,13 @@ impl Connection {
             self.streams.insert_writable(&priority_key);
         }
 
+        // println!(
+        //     "OK stream_send: stream_id={} sent={} buf.len={} fin={}",
+        //     stream_id,
+        //     sent,
+        //     buf.len(),
+        //     fin
+        // );
         Ok(sent)
     }
 
@@ -4864,6 +4877,10 @@ impl Connection {
     pub fn stream_capacity(&self, stream_id: u64) -> Result<usize> {
         if let Some(stream) = self.streams.get(stream_id) {
             let cap = cmp::min(self.tx_cap, stream.send.cap()?);
+            // println!(
+            //     "tx_cap={} stream_id={} cap={}",
+            //     self.tx_cap, stream_id, cap
+            // );
             return Ok(cap);
         };
 
@@ -7213,6 +7230,10 @@ impl Connection {
             Err(_) => 0,
         };
 
+        // println!(
+        //     "cwin_available={} max_tx_data={} tx_data={}",
+        //     cwin_available, self.max_tx_data, self.tx_data
+        // );
         self.tx_cap =
             cmp::min(cwin_available, self.max_tx_data - self.tx_data) as usize;
     }
@@ -7479,7 +7500,7 @@ impl Connection {
             .insert_path(path, false)
             .map_err(|_| Error::OutOfIdentifiers)?;
 
-        println!("{} dcid {}", dcid_seq, pid);
+        //println!("{} dcid {}", dcid_seq, pid);
         self.ids.link_dcid_to_path_id(dcid_seq, pid)?;
 
         Ok(pid)
