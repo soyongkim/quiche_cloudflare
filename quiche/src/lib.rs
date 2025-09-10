@@ -1423,6 +1423,8 @@ pub struct Connection {
     /// Test to check the connection migration from the server
     pub pc_state: bool,
 
+    pub stateless_reset_state: bool,
+
     /// The latest stream ID from which data was received.
     /// Used to track and measure the amount of data received per stream.
     pub latest_received_stream_id: u64,
@@ -1865,6 +1867,8 @@ impl Connection {
 
             pc_state: false,
 
+            stateless_reset_state: false,
+
             latest_received_stream_id: 99999,
 
             stream_rx_log: HashMap::new(),
@@ -2152,7 +2156,9 @@ impl Connection {
                     if self.is_stateless_reset(&buf[len - left..len]) {
                         trace!("{} packet is a stateless reset", self.trace_id);
 
-                        self.closed = true;
+                        // [SD] for testing to alive the connection
+                        self.stateless_reset_state = true;
+                        //self.closed = true;
                     }
 
                     left
@@ -7478,6 +7484,14 @@ impl Connection {
         // Do we have a spare DCID? If we are using zero-length DCID, just use
         // the default having sequence 0 (note that if we exceed our local CID
         // limit, the `insert_path()` call will raise an error.
+        // let dcid_seq = if self.ids.zero_length_dcid() {
+        //     0
+        // } else {
+        //     self.ids
+        //         .lowest_available_dcid_seq()
+        //         .ok_or(Error::OutOfIdentifiers)?
+        // };
+
         // [SD] Keep to use Current connection id
         let dcid_seq = if let Some(active_dcid_seq) =
             self.paths.get_active()?.active_dcid_seq

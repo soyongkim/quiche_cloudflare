@@ -247,8 +247,9 @@ impl StreamMap {
                     ),
 
                     // Remotely-initiated unidirectional stream.
-                    (false, false) =>
-                        (local_params.initial_max_stream_data_uni, 0),
+                    (false, false) => {
+                        (local_params.initial_max_stream_data_uni, 0)
+                    },
                 };
 
                 // The two least significant bits from a stream id identify the
@@ -265,6 +266,7 @@ impl StreamMap {
                         );
 
                         if n > self.peer_max_streams_bidi {
+                            println!("Stream limit exceeded 1, n: {} self.peer_max_streams_bidi: {}", n, self.peer_max_streams_bidi);
                             return Err(Error::StreamLimit);
                         }
 
@@ -490,8 +492,10 @@ impl StreamMap {
     }
 
     /// Updates the peer's maximum bidirectional stream count limit.
+    /// test for the max streams
     pub fn update_peer_max_streams_bidi(&mut self, v: u64) {
         self.peer_max_streams_bidi = cmp::max(self.peer_max_streams_bidi, v);
+        //self.peer_max_streams_bidi = 100;
     }
 
     /// Updates the peer's maximum unidirectional stream count limit.
@@ -639,17 +643,17 @@ impl StreamMap {
     /// Returns true if the max bidirectional streams count needs to be updated
     /// by sending a MAX_STREAMS frame to the peer.
     pub fn should_update_max_streams_bidi(&self) -> bool {
-        self.local_max_streams_bidi_next != self.local_max_streams_bidi &&
-            self.local_max_streams_bidi_next / 2 >
-                self.local_max_streams_bidi - self.peer_opened_streams_bidi
+        self.local_max_streams_bidi_next != self.local_max_streams_bidi
+            && self.local_max_streams_bidi_next / 2
+                > self.local_max_streams_bidi - self.peer_opened_streams_bidi
     }
 
     /// Returns true if the max unidirectional streams count needs to be updated
     /// by sending a MAX_STREAMS frame to the peer.
     pub fn should_update_max_streams_uni(&self) -> bool {
-        self.local_max_streams_uni_next != self.local_max_streams_uni &&
-            self.local_max_streams_uni_next / 2 >
-                self.local_max_streams_uni - self.peer_opened_streams_uni
+        self.local_max_streams_uni_next != self.local_max_streams_uni
+            && self.local_max_streams_uni_next / 2
+                > self.local_max_streams_uni - self.peer_opened_streams_uni
     }
 
     /// Returns the number of active streams in the map.
@@ -715,9 +719,9 @@ impl Stream {
     /// Returns true if the stream has enough flow control capacity to be
     /// written to, and is not finished.
     pub fn is_writable(&self) -> bool {
-        !self.send.shutdown &&
-            !self.send.is_fin() &&
-            (self.send.off + self.send_lowat as u64) < self.send.max_data
+        !self.send.shutdown
+            && !self.send.is_fin()
+            && (self.send.off + self.send_lowat as u64) < self.send.max_data
     }
 
     /// Returns true if the stream has data to send and is allowed to send at
@@ -1359,10 +1363,10 @@ impl SendBuf {
 
         let mut next_off = out_off;
 
-        while out_len > 0 &&
-            self.ready() &&
-            self.off_front() == next_off &&
-            self.off_front() < self.max_data
+        while out_len > 0
+            && self.ready()
+            && self.off_front() == next_off
+            && self.off_front() < self.max_data
         {
             let buf = match self.data.get_mut(self.pos) {
                 Some(v) => v,
