@@ -1431,6 +1431,9 @@ pub struct Connection {
 
     /// The latest stream ID from which data was sent.
     pub stream_rx_log: HashMap<u64, HashMap<SocketAddr, u64>>,
+
+    /// Whether a NEW_CONNECTION_ID frame has been received.
+    new_connection_id_received: bool,
 }
 
 /// Creates a new server-side connection.
@@ -1872,6 +1875,8 @@ impl Connection {
             latest_received_stream_id: 99999,
 
             stream_rx_log: HashMap::new(),
+
+            new_connection_id_received: false,
         };
 
         if let Some(odcid) = odcid {
@@ -5969,6 +5974,17 @@ impl Connection {
         self.ids.available_dcids()
     }
 
+    /// Returns true if a NEW_CONNECTION_ID frame has been received and resets the flag.
+    ///
+    /// This method can be used by applications to detect when the peer has
+    /// provided new connection IDs that can be used for connection migration.
+    /// The flag is automatically reset to false after calling this method.
+    pub fn take_new_connection_id_received(&mut self) -> bool {
+        let received = self.new_connection_id_received;
+        self.new_connection_id_received = false;
+        received
+    }
+
     /// Returns an iterator over destination `SockAddr`s whose association
     /// with `from` forms a known QUIC path on which packets can be sent to.
     ///
@@ -6675,6 +6691,16 @@ impl Connection {
     ) -> Result<()> {
         trace!("{} rx frm {:?}", self.trace_id, frame);
 
+        // Log all frame types to track what's being processed
+        match &frame {
+            frame::Frame::Stream { stream_id, data } => {
+                // println!("QUICHE_FRAME_DEBUG: STREAM frame - stream_id={}, data_len={}", stream_id, data.len());
+            },
+            _ => {
+                // println!("QUICHE_FRAME_DEBUG: Non-STREAM frame - type={:?}", std::mem::discriminant(&frame));
+            },
+        }
+
         match frame {
             frame::Frame::Padding { .. } => (),
 
@@ -6725,10 +6751,14 @@ impl Connection {
                 error_code,
                 final_size,
             } => {
+                println!("QUICHE_RESET_STREAM: Stream {} reset with error_code={}, final_size={}", 
+                         stream_id, error_code, final_size);
+
                 // Peer can't send on our unidirectional streams.
                 if !stream::is_bidi(stream_id)
                     && stream::is_local(stream_id, self.is_server)
                 {
+                    println!("QUICHE_RESET_STREAM_ERROR: Invalid stream state for reset stream {}", stream_id);
                     return Err(Error::InvalidStreamState(stream_id));
                 }
 
@@ -6849,10 +6879,29 @@ impl Connection {
             frame::Frame::NewToken { .. } => (),
 
             frame::Frame::Stream { stream_id, data } => {
+                // println!("QUICHE_STREAM_FRAME: Processing STREAM frame for stream {}, data_len={}", stream_id, data.len());
+
+                // Special debugging for stream 0
+                if stream_id == 0 {
+                    // println!("STREAM_0_DEBUG: Received STREAM frame for stream 0 with {} bytes", data.len());
+                    // println!(
+                    //     "STREAM_0_DEBUG: is_bidi(0) = {}",
+                    //     stream::is_bidi(stream_id)
+                    // );
+                    // println!(
+                    //     "STREAM_0_DEBUG: is_local(0, {}) = {}",
+                    //     self.is_server,
+                    //     stream::is_local(stream_id, self.is_server)
+                    // );
+                    // println!("STREAM_0_DEBUG: Check condition: !is_bidi && is_local = {}",
+                    //          !stream::is_bidi(stream_id) && stream::is_local(stream_id, self.is_server));
+                }
+
                 // Peer can't send on our unidirectional streams.
                 if !stream::is_bidi(stream_id)
                     && stream::is_local(stream_id, self.is_server)
                 {
+                    // println!("QUICHE_STREAM_FRAME_ERROR: Invalid stream state for stream {}", stream_id);
                     return Err(Error::InvalidStreamState(stream_id));
                 }
 
@@ -6900,9 +6949,17 @@ impl Connection {
 
                 let was_draining = stream.is_draining();
 
+                // println!("QUICHE_RECV_WRITE: Stream {} receiving {} bytes, was_readable={}, is_draining={}",
+                //          stream_id, data.max_off() - data.off(), was_readable, was_draining);
                 stream.recv.write(data)?;
+                let is_readable_after = stream.is_readable();
+                // println!("QUICHE_RECV_WRITE_RESULT: Stream {} now readable={}", stream_id, is_readable_after);
 
                 if !was_readable && stream.is_readable() {
+                    // println!("QUICHE_READABLE_TRANSITION: Stream {} becoming readable - adding to readable set", stream_id);
+                    if stream_id == 0 {
+                        // println!("STREAM_0_DEBUG: Stream 0 becoming readable! was_readable={}, now_readable={}", was_readable, stream.is_readable());
+                    }
                     self.streams.insert_readable(&priority_key);
                 }
 
@@ -7051,6 +7108,9 @@ impl Connection {
                         );
                     }
                 }
+
+                // new connection id
+                self.new_connection_id_received = true;
             },
 
             frame::Frame::RetireConnectionId { seq_num } => {
@@ -7484,26 +7544,26 @@ impl Connection {
         // Do we have a spare DCID? If we are using zero-length DCID, just use
         // the default having sequence 0 (note that if we exceed our local CID
         // limit, the `insert_path()` call will raise an error.
-        // let dcid_seq = if self.ids.zero_length_dcid() {
-        //     0
-        // } else {
-        //     self.ids
-        //         .lowest_available_dcid_seq()
-        //         .ok_or(Error::OutOfIdentifiers)?
-        // };
-
-        // [SD] Keep to use Current connection id
-        let dcid_seq = if let Some(active_dcid_seq) =
-            self.paths.get_active()?.active_dcid_seq
-        {
-            active_dcid_seq
-        } else if self.ids.zero_length_dcid() {
+        let dcid_seq = if self.ids.zero_length_dcid() {
             0
         } else {
             self.ids
                 .lowest_available_dcid_seq()
                 .ok_or(Error::OutOfIdentifiers)?
         };
+
+        // [SD] Keep to use Current connection id
+        // let dcid_seq = if let Some(active_dcid_seq) =
+        //     self.paths.get_active()?.active_dcid_seq
+        // {
+        //     active_dcid_seq
+        // } else if self.ids.zero_length_dcid() {
+        //     0
+        // } else {
+        //     self.ids
+        //         .lowest_available_dcid_seq()
+        //         .ok_or(Error::OutOfIdentifiers)?
+        // };
 
         let mut path =
             path::Path::new(local_addr, peer_addr, &self.recovery_config, false);

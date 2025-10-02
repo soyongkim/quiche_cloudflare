@@ -344,7 +344,13 @@ impl StreamMap {
     /// If the stream was already in the list, this does nothing.
     pub fn insert_readable(&mut self, priority_key: &Arc<StreamPriorityKey>) {
         if !priority_key.readable.is_linked() {
+            // println!("QUICHE_READABLE_ADD: Stream {} added to readable set", priority_key.id);
+            if priority_key.id == 0 {
+                // println!("STREAM_0_DEBUG: Successfully adding stream 0 to readable set!");
+            }
             self.readable.insert(Arc::clone(priority_key));
+        } else if priority_key.id == 0 {
+            // println!("STREAM_0_DEBUG: Stream 0 was already in readable set - not adding again");
         }
     }
 
@@ -353,6 +359,8 @@ impl StreamMap {
         if !priority_key.readable.is_linked() {
             return;
         }
+
+        // println!("QUICHE_READABLE_REMOVE: Stream {} removed from readable set", priority_key.id);
 
         let mut c = {
             let ptr = Arc::as_ptr(priority_key);
