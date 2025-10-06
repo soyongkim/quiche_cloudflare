@@ -7118,17 +7118,18 @@ impl Connection {
                     return Err(Error::InvalidState);
                 }
 
-                if let Some(pid) = self.ids.retire_scid(seq_num, &hdr.dcid)? {
-                    let path = self.paths.get_mut(pid)?;
+                // [SD] temporally, not doing for the RCID.
+                // if let Some(pid) = self.ids.retire_scid(seq_num, &hdr.dcid)? {
+                //     let path = self.paths.get_mut(pid)?;
 
-                    // Maybe we already linked a new SCID to that path.
-                    if path.active_scid_seq == Some(seq_num) {
-                        // XXX: We do not remove unused paths now, we instead
-                        // wait until we need to maintain more paths than the
-                        // host is willing to.
-                        path.active_scid_seq = None;
-                    }
-                }
+                //     // Maybe we already linked a new SCID to that path.
+                //     if path.active_scid_seq == Some(seq_num) {
+                //         // XXX: We do not remove unused paths now, we instead
+                //         // wait until we need to maintain more paths than the
+                //         // host is willing to.
+                //         path.active_scid_seq = None;
+                //     }
+                // }
             },
 
             frame::Frame::PathChallenge { data } => {
