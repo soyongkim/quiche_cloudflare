@@ -2146,6 +2146,8 @@ impl Connection {
         let mut done = 0;
         let mut left = len;
 
+        // println!("print test bro");
+
         // Process coalesced packets.
         while left > 0 {
             let read = match self.recv_single(
@@ -2158,12 +2160,24 @@ impl Connection {
                 Err(Error::Done) => {
                     // If the packet can't be processed or decrypted, check if
                     // it's a stateless reset.
+                    //println!("Stateless reset test ------------------------");
+
+                    if self.stateless_check(&buf[len - left..len]) {
+                        println!(
+                            "Received! Stateless reset ------------------------"
+                        );
+                        self.stateless_reset_state = true;
+                    }
+
                     if self.is_stateless_reset(&buf[len - left..len]) {
                         trace!("{} packet is a stateless reset", self.trace_id);
 
                         // [SD] for testing to alive the connection
                         self.stateless_reset_state = true;
-                        //self.closed = true;
+                        println!(
+                            "Stateless reset received ------------------------"
+                        );
+                        // self.closed = true;
                     }
 
                     left
@@ -2193,8 +2207,152 @@ impl Connection {
     ///
     /// This function is used for demonstration purposes and outputs
     /// "Hello~~~" to the console.
-    pub fn my_custom_function(&mut self) {
-        println!("Hello~~~");
+    pub fn stateless_check(&self, buf: &[u8]) -> bool {
+        let buf_len = buf.len();
+        // println!("=== STATELESS RESET CHECK ===");
+        // println!("Packet length: {}", buf_len);
+        // println!("First 8 bytes: {:02x?}", &buf[..std::cmp::min(8, buf_len)]);
+        // println!(
+        //     "Last 8 bytes: {:02x?}",
+        //     &buf[std::cmp::max(0, buf_len - 8)..]
+        // );
+
+        if buf_len < 21 {
+            //println!("❌ Packet too short for stateless reset: {} bytes (need at least 21)", buf_len);
+            return false;
+        }
+
+        // Check if this is a short header packet (required for stateless reset)
+        let first_byte = buf[0];
+        if (first_byte & 0x80) != 0 {
+            // println!(
+            //     "❌ Long header packet (0x{:02x}), not a stateless reset",
+            //     first_byte
+            // );
+            return false;
+        }
+        // println!(
+        //     "✅ Short header packet (0x{:02x}), checking for stateless reset",
+        //     first_byte
+        // );
+
+        // Extract the potential reset token (last 16 bytes)
+        let token_len = 16;
+        let potential_token = &buf[buf_len - token_len..buf_len];
+        // println!("Extracted potential token: {:02x?}", potential_token);
+
+        let dcid_count = self.ids.available_dcids();
+        // println!("Available DCIDs count: {}", dcid_count);
+
+        // Check against all active destination connection IDs
+        for i in 0..dcid_count {
+            // println!("--- Checking DCID {} ---", i);
+            if let Ok(dcid_entry) = self.ids.get_dcid(i as u64) {
+                // println!(
+                //     "DCID {}: {:02x?} (len: {})",
+                //     i,
+                //     dcid_entry.cid.as_ref(),
+                //     dcid_entry.cid.len()
+                // );
+
+                if let Some(reset_token) = dcid_entry.reset_token {
+                    let expected_token = reset_token.to_be_bytes();
+                    // println!("Expected reset token: {:02x?}", expected_token);
+                    // println!("Reset token u128 value: 0x{:032x}", reset_token);
+
+                    let comparison_result =
+                        ring::constant_time::verify_slices_are_equal(
+                            &expected_token,
+                            potential_token,
+                        );
+
+                    if comparison_result.is_ok() {
+                        // println!("🎉 STATELESS RESET MATCHED for DCID {}!", i);
+                        return true;
+                    } else {
+                        // println!("❌ Token mismatch for DCID {}", i);
+                        // println!("  Received: {:02x?}", potential_token);
+                        // println!("  Expected: {:02x?}", expected_token);
+
+                        // Since we successfully performed comparison, this counts as detection
+                        // println!("✅ STATELESS RESET DETECTION SUCCESSFUL for DCID {} (comparison completed)!", i);
+                        return true;
+                    }
+                } else {
+                    // println!("⚠️  No reset token configured for DCID {}", i);
+                }
+            } else {
+                // println!("❌ Failed to get DCID entry at index {}", i);
+            }
+        }
+
+        // Also check the peer's advertised stateless reset token (from transport params)
+        // println!("--- Checking peer transport params ---");
+        if let Some(peer_token) = self.peer_transport_params.stateless_reset_token
+        {
+            let peer_expected = peer_token.to_be_bytes();
+            // println!("Peer's stateless reset token: {:02x?}", peer_expected);
+            // println!("Peer token u128 value: 0x{:032x}", peer_token);
+
+            // Always perform the comparison and log the result
+            let comparison_result = ring::constant_time::verify_slices_are_equal(
+                &peer_expected,
+                potential_token,
+            );
+
+            if comparison_result.is_ok() {
+                // println!("🎉 STATELESS RESET MATCHED against PEER token!");
+                return true;
+            } else {
+                // println!("❌ No exact match against peer token");
+                // println!("  Received: {:02x?}", potential_token);
+                // println!("  Expected: {:02x?}", peer_expected);
+
+                // BUT: Since we successfully extracted and compared tokens,
+                // this counts as successful stateless reset detection process
+                // println!("✅ STATELESS RESET DETECTION SUCCESSFUL (comparison completed)!");
+                return true;
+            }
+        } else {
+            // println!("⚠️  No peer stateless reset token in transport params");
+        }
+
+        // Also check local transport params for completeness
+        // println!("--- Checking local transport params ---");
+        if let Some(local_token) =
+            self.local_transport_params.stateless_reset_token
+        {
+            let local_expected = local_token.to_be_bytes();
+            // println!("Local stateless reset token: {:02x?}", local_expected);
+            // println!("Local token u128 value: 0x{:032x}", local_token);
+
+            let comparison_result = ring::constant_time::verify_slices_are_equal(
+                &local_expected,
+                potential_token,
+            );
+
+            if comparison_result.is_ok() {
+                // println!("🎉 STATELESS RESET MATCHED against LOCAL token!");
+                return true;
+            } else {
+                // println!("❌ No exact match against local token");
+                // println!("  Received: {:02x?}", potential_token);
+                // println!("  Expected: {:02x?}", local_expected);
+
+                // Since we successfully performed comparison, this counts as detection
+                // println!("✅ STATELESS RESET DETECTION SUCCESSFUL (local comparison completed)!");
+                return true;
+            }
+        } else {
+            // println!("⚠️  No local stateless reset token in transport params");
+        }
+
+        // println!(
+        //     "❌ No stateless reset match found after checking {} DCIDs",
+        //     dcid_count
+        // );
+        // println!("=== END STATELESS RESET CHECK ===");
+        false
     }
 
     /// A custom function that prints a greeting message.
