@@ -115,7 +115,7 @@ pub enum PathEvent {
 #[derive(Debug)]
 pub struct Path {
     /// The local address.
-    local_addr: SocketAddr,
+    pub local_addr: SocketAddr,
 
     /// The remote address.
     peer_addr: SocketAddr,
@@ -263,9 +263,9 @@ impl Path {
     /// Returns whether the path can be used to send non-probing packets.
     #[inline]
     pub fn usable(&self) -> bool {
-        self.active() ||
-            (self.state == PathState::Validated &&
-                self.active_dcid_seq.is_some())
+        self.active()
+            || (self.state == PathState::Validated
+                && self.active_dcid_seq.is_some())
     }
 
     /// Returns whether the path is unused.
@@ -430,8 +430,8 @@ impl Path {
             // As a server, if requesting a challenge is not
             // possible due to the amplification attack, declare the
             // validation as failed.
-            if self.probing_lost >= crate::MAX_PROBING_TIMEOUTS ||
-                (is_server && self.max_send_bytes < crate::MIN_PROBING_SIZE)
+            if self.probing_lost >= crate::MAX_PROBING_TIMEOUTS
+                || (is_server && self.max_send_bytes < crate::MIN_PROBING_SIZE)
             {
                 self.on_failed_validation();
             } else {

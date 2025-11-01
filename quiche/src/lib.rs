@@ -1277,7 +1277,7 @@ pub struct Connection {
     retrans_count: usize,
 
     /// Total number of bytes received from the peer.
-    rx_data: u64,
+    pub rx_data: u64,
 
     /// Receiver flow controller.
     flow_control: flowcontrol::FlowControl,
@@ -2162,12 +2162,12 @@ impl Connection {
                     // it's a stateless reset.
                     //println!("Stateless reset test ------------------------");
 
-                    if self.stateless_check(&buf[len - left..len]) {
-                        println!(
-                            "Received! Stateless reset ------------------------"
-                        );
-                        self.stateless_reset_state = true;
-                    }
+                    // if self.stateless_check(&buf[len - left..len]) {
+                    //     println!(
+                    //         "Received! Stateless reset ------------------------"
+                    //     );
+                    //     self.stateless_reset_state = true;
+                    // }
 
                     if self.is_stateless_reset(&buf[len - left..len]) {
                         trace!("{} packet is a stateless reset", self.trace_id);
@@ -7039,22 +7039,6 @@ impl Connection {
             frame::Frame::Stream { stream_id, data } => {
                 // println!("QUICHE_STREAM_FRAME: Processing STREAM frame for stream {}, data_len={}", stream_id, data.len());
 
-                // Special debugging for stream 0
-                if stream_id == 0 {
-                    // println!("STREAM_0_DEBUG: Received STREAM frame for stream 0 with {} bytes", data.len());
-                    // println!(
-                    //     "STREAM_0_DEBUG: is_bidi(0) = {}",
-                    //     stream::is_bidi(stream_id)
-                    // );
-                    // println!(
-                    //     "STREAM_0_DEBUG: is_local(0, {}) = {}",
-                    //     self.is_server,
-                    //     stream::is_local(stream_id, self.is_server)
-                    // );
-                    // println!("STREAM_0_DEBUG: Check condition: !is_bidi && is_local = {}",
-                    //          !stream::is_bidi(stream_id) && stream::is_local(stream_id, self.is_server));
-                }
-
                 // Peer can't send on our unidirectional streams.
                 if !stream::is_bidi(stream_id)
                     && stream::is_local(stream_id, self.is_server)
@@ -7076,6 +7060,7 @@ impl Connection {
                     .or_insert_with(HashMap::new);
                 let entry = addr_map.entry(local_addr).or_insert(0);
                 *entry += data_len;
+
                 // Get existing stream or create a new one, but if the stream
                 // has already been closed and collected, ignore the frame.
                 //
@@ -7110,8 +7095,6 @@ impl Connection {
                 // println!("QUICHE_RECV_WRITE: Stream {} receiving {} bytes, was_readable={}, is_draining={}",
                 //          stream_id, data.max_off() - data.off(), was_readable, was_draining);
                 stream.recv.write(data)?;
-                let is_readable_after = stream.is_readable();
-                // println!("QUICHE_RECV_WRITE_RESULT: Stream {} now readable={}", stream_id, is_readable_after);
 
                 if !was_readable && stream.is_readable() {
                     // println!("QUICHE_READABLE_TRANSITION: Stream {} becoming readable - adding to readable set", stream_id);
@@ -7703,20 +7686,8 @@ impl Connection {
         // Do we have a spare DCID? If we are using zero-length DCID, just use
         // the default having sequence 0 (note that if we exceed our local CID
         // limit, the `insert_path()` call will raise an error.
-        let dcid_seq = if self.ids.zero_length_dcid() {
-            0
-        } else {
-            self.ids
-                .lowest_available_dcid_seq()
-                .ok_or(Error::OutOfIdentifiers)?
-        };
-
-        // [SD] Keep to use Current connection id
-        // let dcid_seq = if let Some(active_dcid_seq) =
-        //     self.paths.get_active()?.active_dcid_seq
-        // {
-        //     active_dcid_seq
-        // } else if self.ids.zero_length_dcid() {
+        // [SD] Use new DCID for the new path
+        // let dcid_seq = if self.ids.zero_length_dcid() {
         //     0
         // } else {
         //     self.ids
@@ -7724,6 +7695,20 @@ impl Connection {
         //         .ok_or(Error::OutOfIdentifiers)?
         // };
 
+        // [SD] Keep to use Current connection id
+        let dcid_seq = if let Some(active_dcid_seq) =
+            self.paths.get_active()?.active_dcid_seq
+        {
+            active_dcid_seq
+        } else if self.ids.zero_length_dcid() {
+            0
+        } else {
+            self.ids
+                .lowest_available_dcid_seq()
+                .ok_or(Error::OutOfIdentifiers)?
+        };
+
+        // use new DCID for the new path
         let mut path =
             path::Path::new(local_addr, peer_addr, &self.recovery_config, false);
         path.active_dcid_seq = Some(dcid_seq);
